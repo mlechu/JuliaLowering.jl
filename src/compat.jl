@@ -25,7 +25,7 @@ function expr_to_syntaxtree(@nospecialize(e), lnn::Union{LineNumberNode, Nothing
         kind=Kind, syntax_flags=UInt16,
         source=SourceAttrType, var_id=Int, value=Any,
         name_val=String, is_toplevel_thunk=Bool,
-        scope_layer=LayerId)
+        scope_layer=LayerId, meta=CompileHints)
     expr_to_syntaxtree(graph, e, lnn)
 end
 
@@ -191,14 +191,14 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
     elseif e isa Symbol
         st_id = _insert_tree_node(graph, K"Identifier", src; name_val=String(e))
         return st_id, src
-    elseif e isa QuoteNode && e.value isa Symbol
-        # Undo special handling from st->expr
-        return _insert_convert_expr(Expr(:quote, e.value), graph, src)
-    # elseif e isa QuoteNode
-    #     st_id = _insert_tree_node(graph, K"inert", src)
-    #     quote_child, _ = _insert_convert_expr(e.value, graph, src)
-    #     setchildren!(graph, st_id, NodeId[quote_child])
-    #     return st_id, src
+    elseif e isa QuoteNode
+        if e.value isa Symbol
+            return _insert_convert_expr(Expr(:quoted_symbol, e.value), graph, src)
+        elseif e.value isa Expr
+            return _insert_convert_expr(Expr(:inert, e.value), graph, src)
+        else
+            return _insert_convert_expr(e.value, graph, src)
+        end
     elseif e isa String
         st_id = _insert_tree_node(graph, K"string", src)
         id_inner = _insert_tree_node(graph, K"String", src; value=e)
@@ -207,7 +207,9 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
     elseif !(e isa Expr)
         # There are other kinds we could potentially back-convert (e.g. Float),
         # but Value should work fine.
-        st_k = e isa Integer ? K"Integer" : find_kind(string(typeof(e)))
+        st_k = e isa Bool ? K"Bool" :
+            e isa Integer ? K"Integer" :
+            find_kind(string(typeof(e)))
         st_id = _insert_tree_node(graph, isnothing(st_k) ? K"Value" : st_k, src; value=e)
         return st_id, src
     end
@@ -267,12 +269,14 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
                                              Expr(:MacroName, a12_esc(a12.value))))
             end
         elseif a1 isa GlobalRef && a1.mod === Core
-            # TODO (maybe): syntax-introduced macrocalls are listed here for
-            # reference.  We probably don't need to convert these.
+            # Syntax-introduced macrocalls are listed here for reference.  We
+            # probably don't need to convert these.
             if a1.name === Symbol("@cmd")
-            elseif a1.name === Symbol("@doc")
+            elseif a1.name === Symbol("@doc") && nargs >= 2
+                # Single-arg @doc is a lookup not corresponding to K"doc"
+                # Revise sometimes calls @doc with three args, but probably shouldn't
                 st_k = K"doc"
-                child_exprs = child_exprs[2:end]
+                child_exprs = child_exprs[2:3]
             elseif a1.name === Symbol("@int128_str")
             elseif a1.name === Symbol("@int128_str")
             elseif a1.name === Symbol("@big_str")
@@ -466,11 +470,9 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
                              :aggressive_constprop, :specialize, :compile, :infer,
                              :nospecializeinfer, :force_compile, :doc)
             # TODO: Some need to be handled in lowering
-            child_exprs[1] = Expr(:quoted_symbol, e.args[1])
         else
             # Can't throw a hard error; it is explicitly tested that meta can take arbitrary keys.
             @error("Unknown meta form at $src: `$e`\n$(sprint(dump, e))")
-            child_exprs[1] = Expr(:quoted_symbol, e.args[1])
         end
     elseif e.head === :scope_layer
         @assert nargs === 2
@@ -511,6 +513,13 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
         st_k = K"scope_block"
         st_attrs[:scope_type] = :soft
         child_exprs = e.args[2:end]
+    elseif e.head === :inert
+        @assert nargs === 1
+        st_id = _insert_tree_node(graph, K"inert", src)
+        st_inner, src = _insert_convert_expr(e.args[1], graph, src)
+        setchildren!(graph, st_id, [st_inner])
+        setmeta!(SyntaxTree(graph, st_id); as_Expr=true)
+        return st_id, src
     end
 
     #---------------------------------------------------------------------------

@@ -17,6 +17,11 @@ const JL = JuliaLowering
             val = Core.eval(test_mod, out[1])
             @test val == [2,3,4]
         end
+
+        # file argument mismatch with embedded linenumbernodes shouldn't crash
+        ex = Expr(:block, LineNumberNode(111), :(x = 1), LineNumberNode(222), :(x + 1))
+        lwr = JuliaLowering.core_lowering_hook(ex, test_mod, "foo.jl", 333)[1]
+        @test Core.eval(test_mod, lwr) === 2
     end
 
     if isdefined(Core, :_lower)
@@ -35,6 +40,21 @@ const JL = JuliaLowering
             @test out isa Module
             @test isdefined(test_mod, :M)
             @test isdefined(test_mod.M, :x)
+
+            # Tricky cases with symbols
+            prog = parseall(Expr, """module M
+                Base.@constprop :aggressive function f(x); x; end
+                const what = ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.nothing)
+                Base.@propagate_inbounds @inline meta_double_quote_issue(x) = x
+            end""")
+            JL.activate!()
+            out = Core.eval(test_mod, prog)
+            JL.activate!(false)
+            @test out isa Module
+            @test isdefined(test_mod, :M)
+            @test isdefined(test_mod.M, :f)
+            @test isdefined(test_mod.M, :what)
+            @test isdefined(test_mod.M, :meta_double_quote_issue)
         end
     end
 end

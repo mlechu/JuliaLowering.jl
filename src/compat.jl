@@ -467,7 +467,7 @@ function _insert_convert_expr(@nospecialize(e), graph::SyntaxGraph, src::SourceA
             end
         elseif e.args[1] in (:inline, :noinline, :generated, :generated_only,
                              :max_methods, :optlevel, :toplevel, :push_loc, :pop_loc,
-                             :aggressive_constprop, :specialize, :compile, :infer,
+                             :no_constprop, :aggressive_constprop, :specialize, :compile, :infer,
                              :nospecializeinfer, :force_compile, :doc)
             # TODO: Some need to be handled in lowering
         else
